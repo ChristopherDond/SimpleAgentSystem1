@@ -54,4 +54,4 @@ python agentes_estrategia.py --task "write a 1-minute pitch"
 - The app now includes retry with exponential backoff and timeout protection for LLM calls.
 - Task input is validated before execution.
 - `vertice_estrategia.py` is kept as a compatibility entrypoint.
-- On Python 3.14+, some LangChain ecosystem packages may emit warnings.
+- On Python 3.14/3.12+, some LangChain ecosystem packages may emit warnings.
