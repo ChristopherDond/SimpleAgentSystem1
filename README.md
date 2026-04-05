@@ -44,6 +44,14 @@ python agentes_estrategia.py --task "write a 1-minute pitch"
 ## Notes
 
 - The project was cleaned for generic/public use, with no hardcoded business context.
-- To switch models, change `LLM_MODEL` in the main script.
+- To switch models and runtime behavior, use environment variables:
+	- `LLM_MODEL` (default: `llama3.1`)
+	- `LLM_TEMPERATURE` (default: `0.3`)
+	- `LLM_TIMEOUT_SECONDS` (default: `90`)
+	- `LLM_MAX_RETRIES` (default: `3`)
+	- `MAX_TASK_LENGTH` (default: `5000`)
+	- `LOG_LEVEL` (default: `INFO`)
+- The app now includes retry with exponential backoff and timeout protection for LLM calls.
+- Task input is validated before execution.
 - `vertice_estrategia.py` is kept as a compatibility entrypoint.
 - On Python 3.14+, some LangChain ecosystem packages may emit warnings.

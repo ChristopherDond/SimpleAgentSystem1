@@ -20,7 +20,12 @@ Uso:
 """
 
 import argparse
+import logging
 import operator
+import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Annotated, TypedDict
 
 from langchain_ollama import OllamaLLM
@@ -28,8 +33,19 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, StateGraph
 
 # Configuracao
-LLM_MODEL = "llama3.1"
-TEMPERATURE = 0.3
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("agentes_estrategia")
+
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1")
+TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+MAX_TASK_LENGTH = int(os.getenv("MAX_TASK_LENGTH", "5000"))
+LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "90"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+
 llm = OllamaLLM(model=LLM_MODEL, temperature=TEMPERATURE)
 
 # Contexto base generico, injetado em todos os agentes.
@@ -62,8 +78,60 @@ class TeamState(TypedDict):
     final_output: str
 
 
+def validate_task(task: str) -> str:
+    if not task or not task.strip():
+        raise ValueError("A tarefa nao pode ser vazia.")
+
+    cleaned_task = task.strip()
+    if len(cleaned_task) > MAX_TASK_LENGTH:
+        raise ValueError(f"A tarefa excede o limite de {MAX_TASK_LENGTH} caracteres.")
+
+    # Bloqueio basico para entradas obviamente maliciosas em contexto CLI.
+    if re.search(r"(^|\s)(rm\s+-rf|shutdown|format\s+c:|del\s+/f\s+/s)(\s|$)", cleaned_task, flags=re.IGNORECASE):
+        raise ValueError("A tarefa contem padroes potencialmente perigosos e foi bloqueada.")
+
+    return cleaned_task
+
+
+def invoke_with_retry(prompt: str, agent_name: str) -> str:
+    last_error = None
+
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        try:
+            start = time.time()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(llm.invoke, prompt)
+                output = future.result(timeout=LLM_TIMEOUT_SECONDS)
+
+            duration = time.time() - start
+            logger.info("agent=%s attempt=%d status=ok duration_s=%.2f", agent_name, attempt, duration)
+            return output
+        except FuturesTimeoutError as exc:
+            last_error = exc
+            logger.warning(
+                "agent=%s attempt=%d status=timeout timeout_s=%d",
+                agent_name,
+                attempt,
+                LLM_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning("agent=%s attempt=%d status=error error=%s", agent_name, attempt, exc)
+
+        if attempt < LLM_MAX_RETRIES:
+            backoff = 2 ** (attempt - 1)
+            logger.info("agent=%s next_retry_in_s=%d", agent_name, backoff)
+            time.sleep(backoff)
+
+    logger.error("agent=%s status=failed error=%s", agent_name, last_error)
+    return (
+        "Nao foi possivel gerar uma resposta agora. "
+        "Verifique se o Ollama esta em execucao e tente novamente em instantes."
+    )
+
+
 def agent_manager(state: TeamState) -> TeamState:
-    print("\n🧭 [MANAGER] Lendo a tarefa e decidindo o especialista...")
+    logger.info("manager_start")
 
     prompt = f"""
 Você é o gerente de um time de estratégia com especialistas.
@@ -82,9 +150,12 @@ TAREFA DO USUÁRIO:
 Responda APENAS com uma palavra (sem pontuação, sem explicação):
 roteirista | pesquisador | estrategista | conteudista | critico
 """
-    raw = llm.invoke(prompt).strip().lower()
+    raw = invoke_with_retry(prompt, "manager").strip().lower()
     valid = ["roteirista", "pesquisador", "estrategista", "conteudista", "critico"]
     route = next((r for r in valid if r in raw), "estrategista")
+
+    if route == "estrategista" and "estrategista" not in raw:
+        logger.warning("manager_route_fallback raw=%s fallback=estrategista", raw)
 
     emoji = {
         "roteirista": "🎤",
@@ -93,7 +164,7 @@ roteirista | pesquisador | estrategista | conteudista | critico
         "conteudista": "📱",
         "critico": "📋",
     }
-    print(f"   → Especialista escolhido: {emoji[route]} {route.upper()}")
+    logger.info("manager_route_selected route=%s", route)
 
     return {
         **state,
@@ -103,7 +174,7 @@ roteirista | pesquisador | estrategista | conteudista | critico
 
 
 def agent_roteirista(state: TeamState) -> TeamState:
-    print("\n🎤 [ROTEIRISTA] Criando conteúdo...")
+    logger.info("agent_start name=roteirista")
 
     prompt = f"""
 {BASE_CONTEXT}
@@ -125,8 +196,8 @@ TAREFA:
 
 Escreva agora:
 """
-    output = llm.invoke(prompt)
-    print(f"   ✅ Pronto ({len(output)} chars)")
+    output = invoke_with_retry(prompt, "roteirista")
+    logger.info("agent_done name=roteirista chars=%d", len(output))
 
     return {
         **state,
@@ -136,7 +207,7 @@ Escreva agora:
 
 
 def agent_pesquisador(state: TeamState) -> TeamState:
-    print("\n🔍 [PESQUISADOR] Levantando dados e análises...")
+    logger.info("agent_start name=pesquisador")
 
     prompt = f"""
 {BASE_CONTEXT}
@@ -160,8 +231,8 @@ TAREFA:
 
 Produza a análise agora:
 """
-    output = llm.invoke(prompt)
-    print(f"   ✅ Pronto ({len(output)} chars)")
+    output = invoke_with_retry(prompt, "pesquisador")
+    logger.info("agent_done name=pesquisador chars=%d", len(output))
 
     return {
         **state,
@@ -171,7 +242,7 @@ Produza a análise agora:
 
 
 def agent_estrategista(state: TeamState) -> TeamState:
-    print("\n📊 [ESTRATEGISTA] Desenvolvendo a estratégia...")
+    logger.info("agent_start name=estrategista")
 
     prompt = f"""
 {BASE_CONTEXT}
@@ -198,8 +269,8 @@ TAREFA:
 
 Desenvolva a estratégia agora:
 """
-    output = llm.invoke(prompt)
-    print(f"   ✅ Pronto ({len(output)} chars)")
+    output = invoke_with_retry(prompt, "estrategista")
+    logger.info("agent_done name=estrategista chars=%d", len(output))
 
     return {
         **state,
@@ -209,7 +280,7 @@ Desenvolva a estratégia agora:
 
 
 def agent_critico(state: TeamState) -> TeamState:
-    print("\n📋 [CRÍTICO] Analisando com olhar objetivo...")
+    logger.info("agent_start name=critico")
 
     prompt = f"""
 {BASE_CONTEXT}
@@ -235,8 +306,8 @@ CONTEÚDO A REVISAR:
 
 Escreva a revisão agora:
 """
-    output = llm.invoke(prompt)
-    print(f"   ✅ Pronto ({len(output)} chars)")
+    output = invoke_with_retry(prompt, "critico")
+    logger.info("agent_done name=critico chars=%d", len(output))
 
     return {
         **state,
@@ -246,7 +317,7 @@ Escreva a revisão agora:
 
 
 def agent_conteudista(state: TeamState) -> TeamState:
-    print("\n📱 [CONTEUDISTA] Montando estratégia de conteúdo...")
+    logger.info("agent_start name=conteudista")
 
     prompt = f"""
 {BASE_CONTEXT}
@@ -269,8 +340,8 @@ TAREFA:
 
 Produza agora:
 """
-    output = llm.invoke(prompt)
-    print(f"   ✅ Pronto ({len(output)} chars)")
+    output = invoke_with_retry(prompt, "conteudista")
+    logger.info("agent_done name=conteudista chars=%d", len(output))
 
     return {
         **state,
@@ -331,9 +402,11 @@ def build_graph():
 def run_team(task: str) -> str:
     app = build_graph()
 
+    validated_task = validate_task(task)
+
     initial_state: TeamState = {
         "messages": [],
-        "task": task,
+        "task": validated_task,
         "route": "",
         "roteirista_output": "",
         "pesquisador_output": "",
@@ -345,7 +418,7 @@ def run_team(task: str) -> str:
 
     print(f"\n{'═' * 62}")
     print("  TIME DE ESTRATÉGIA MULTIAGENTE")
-    print(f"  Tarefa: {task[:75]}{'...' if len(task) > 75 else ''}")
+    print(f"  Tarefa: {validated_task[:75]}{'...' if len(validated_task) > 75 else ''}")
     print(f"{'═' * 62}")
 
     result = app.invoke(initial_state)
@@ -392,7 +465,11 @@ def interactive_mode():
             break
         if not task:
             continue
-        run_team(task)
+        try:
+            run_team(task)
+        except ValueError as exc:
+            logger.warning("task_validation_error error=%s", exc)
+            print(f"\n[entrada invalida] {exc}")
 
 
 if __name__ == "__main__":
@@ -401,6 +478,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.task:
-        run_team(args.task)
+        try:
+            run_team(args.task)
+        except ValueError as exc:
+            logger.warning("task_validation_error error=%s", exc)
+            print(f"\n[entrada invalida] {exc}")
     else:
         interactive_mode()
