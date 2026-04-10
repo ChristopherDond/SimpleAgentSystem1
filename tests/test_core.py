@@ -1,22 +1,35 @@
+import pytest
+
 import agentes_estrategia as app
 
 
 def test_validate_task_empty_raises():
-    try:
+    with pytest.raises(ValueError) as exc_info:
         app.validate_task("   ")
-        assert False, "Expected ValueError for empty task"
-    except ValueError as exc:
-        assert "vazia" in str(exc).lower()
+
+    assert "vazia" in str(exc_info.value).lower()
 
 
 def test_validate_task_max_length(monkeypatch):
     monkeypatch.setattr(app, "MAX_TASK_LENGTH", 5)
 
-    try:
+    with pytest.raises(ValueError) as exc_info:
         app.validate_task("abcdef")
-        assert False, "Expected ValueError for max length"
-    except ValueError as exc:
-        assert "limite" in str(exc).lower()
+
+    assert "limite" in str(exc_info.value).lower()
+
+
+def test_create_initial_state_sets_expected_defaults():
+    state = app.create_initial_state("minha tarefa")
+
+    assert state["task"] == "minha tarefa"
+    assert state["route"] == ""
+    assert state["final_output"] == ""
+    assert state["messages"] == []
+
+
+def test_route_task_defaults_to_estrategista():
+    assert app.route_task({"route": ""}) == "estrategista"
 
 
 def test_manager_fallback_to_estrategista(monkeypatch):
@@ -36,6 +49,23 @@ def test_manager_fallback_to_estrategista(monkeypatch):
 
     result = app.agent_manager(state)
     assert result["route"] == "estrategista"
+
+
+def test_consolidate_falls_back_to_estrategista_when_route_unknown():
+    state: app.TeamState = {
+        "messages": [],
+        "task": "teste",
+        "route": "rota_invalida",
+        "roteirista_output": "r",
+        "pesquisador_output": "p",
+        "estrategista_output": "e",
+        "conteudista_output": "c",
+        "critico_output": "x",
+        "final_output": "",
+    }
+
+    result = app.consolidate(state)
+    assert result["final_output"] == "e"
 
 
 def test_consolidate_uses_route_output():

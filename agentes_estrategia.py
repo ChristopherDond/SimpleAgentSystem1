@@ -25,6 +25,7 @@ import operator
 import os
 import re
 import time
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Annotated, TypedDict
 
@@ -40,13 +41,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger("agentes_estrategia")
 
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1")
-TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-MAX_TASK_LENGTH = int(os.getenv("MAX_TASK_LENGTH", "5000"))
-LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "90"))
-LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+@dataclass(frozen=True)
+class AppConfig:
+    model: str
+    temperature: float
+    max_task_length: int
+    timeout_seconds: int
+    max_retries: int
 
-llm = OllamaLLM(model=LLM_MODEL, temperature=TEMPERATURE)
+
+def load_config() -> AppConfig:
+    return AppConfig(
+        model=os.getenv("LLM_MODEL", "llama3.1"),
+        temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
+        max_task_length=int(os.getenv("MAX_TASK_LENGTH", "5000")),
+        timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
+        max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
+    )
+
+
+CONFIG = load_config()
+LLM_MODEL = CONFIG.model
+TEMPERATURE = CONFIG.temperature
+MAX_TASK_LENGTH = CONFIG.max_task_length
+LLM_TIMEOUT_SECONDS = CONFIG.timeout_seconds
+LLM_MAX_RETRIES = CONFIG.max_retries
+
+llm = OllamaLLM(model=CONFIG.model, temperature=CONFIG.temperature)
+
+ROUTES = ("roteirista", "pesquisador", "estrategista", "conteudista", "critico")
+DEFAULT_ROUTE = "estrategista"
 
 # Contexto base generico, injetado em todos os agentes.
 BASE_CONTEXT = """
@@ -76,6 +100,20 @@ class TeamState(TypedDict):
     conteudista_output: str
     critico_output: str
     final_output: str
+
+
+def create_initial_state(task: str) -> TeamState:
+    return {
+        "messages": [],
+        "task": task,
+        "route": "",
+        "roteirista_output": "",
+        "pesquisador_output": "",
+        "estrategista_output": "",
+        "conteudista_output": "",
+        "critico_output": "",
+        "final_output": "",
+    }
 
 
 def validate_task(task: str) -> str:
@@ -151,19 +189,10 @@ Responda APENAS com uma palavra (sem pontuação, sem explicação):
 roteirista | pesquisador | estrategista | conteudista | critico
 """
     raw = invoke_with_retry(prompt, "manager").strip().lower()
-    valid = ["roteirista", "pesquisador", "estrategista", "conteudista", "critico"]
-    route = next((r for r in valid if r in raw), "estrategista")
+    route = next((r for r in ROUTES if r in raw), DEFAULT_ROUTE)
 
-    if route == "estrategista" and "estrategista" not in raw:
+    if route == DEFAULT_ROUTE and DEFAULT_ROUTE not in raw:
         logger.warning("manager_route_fallback raw=%s fallback=estrategista", raw)
-
-    emoji = {
-        "roteirista": "🎤",
-        "pesquisador": "🔍",
-        "estrategista": "📊",
-        "conteudista": "📱",
-        "critico": "📋",
-    }
     logger.info("manager_route_selected route=%s", route)
 
     return {
@@ -351,19 +380,24 @@ Produza agora:
 
 
 def consolidate(state: TeamState) -> TeamState:
-    route = state.get("route", "estrategista")
+    route = state.get("route", DEFAULT_ROUTE)
     output_map = {
         "roteirista": state.get("roteirista_output", ""),
         "pesquisador": state.get("pesquisador_output", ""),
-        "estrategista": state.get("estrategista_output", ""),
+        DEFAULT_ROUTE: state.get("estrategista_output", ""),
         "conteudista": state.get("conteudista_output", ""),
         "critico": state.get("critico_output", ""),
     }
-    return {**state, "final_output": output_map.get(route, "")}
+    selected_output = output_map.get(route)
+    if selected_output:
+        return {**state, "final_output": selected_output}
+
+    logger.warning("consolidate_route_fallback route=%s fallback=%s", route, DEFAULT_ROUTE)
+    return {**state, "final_output": output_map[DEFAULT_ROUTE]}
 
 
 def route_task(state: TeamState) -> str:
-    return state.get("route", "estrategista")
+    return state.get("route", DEFAULT_ROUTE)
 
 
 def build_graph():
@@ -403,18 +437,7 @@ def run_team(task: str) -> str:
     app = build_graph()
 
     validated_task = validate_task(task)
-
-    initial_state: TeamState = {
-        "messages": [],
-        "task": validated_task,
-        "route": "",
-        "roteirista_output": "",
-        "pesquisador_output": "",
-        "estrategista_output": "",
-        "conteudista_output": "",
-        "critico_output": "",
-        "final_output": "",
-    }
+    initial_state = create_initial_state(validated_task)
 
     print(f"\n{'═' * 62}")
     print("  TIME DE ESTRATÉGIA MULTIAGENTE")
