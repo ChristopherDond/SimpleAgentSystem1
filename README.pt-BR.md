@@ -53,5 +53,6 @@ python agentes_estrategia.py --task "escreva um pitch de 1 minuto"
 	- `LOG_LEVEL` (padrao: `INFO`)
 - O app agora inclui retry com backoff exponencial e protecao de timeout nas chamadas ao LLM.
 - A tarefa de entrada agora passa por validacao antes da execucao.
+- O app agora executa agentes de apoio em paralelo e sintetiza uma resposta final integrada.
 - `vertice_estrategia.py` foi mantido como entrypoint de compatibilidade.
 - Em Python 3.14+, algumas bibliotecas do ecossistema LangChain podem emitir warnings.

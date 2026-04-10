@@ -71,6 +71,13 @@ llm = OllamaLLM(model=CONFIG.model, temperature=CONFIG.temperature)
 
 ROUTES = ("roteirista", "pesquisador", "estrategista", "conteudista", "critico")
 DEFAULT_ROUTE = "estrategista"
+SUPPORT_AGENTS_BY_ROUTE = {
+    "roteirista": ("critico", "estrategista"),
+    "pesquisador": ("estrategista", "critico"),
+    "estrategista": ("pesquisador", "conteudista"),
+    "conteudista": ("roteirista", "estrategista"),
+    "critico": ("roteirista", "estrategista"),
+}
 
 # Contexto base generico, injetado em todos os agentes.
 BASE_CONTEXT = """
@@ -99,6 +106,7 @@ class TeamState(TypedDict):
     estrategista_output: str
     conteudista_output: str
     critico_output: str
+    support_summary: str
     final_output: str
 
 
@@ -112,6 +120,7 @@ def create_initial_state(task: str) -> TeamState:
         "estrategista_output": "",
         "conteudista_output": "",
         "critico_output": "",
+        "support_summary": "",
         "final_output": "",
     }
 
@@ -379,6 +388,67 @@ Produza agora:
     }
 
 
+AGENT_OUTPUT_FIELDS = {
+    "roteirista": "roteirista_output",
+    "pesquisador": "pesquisador_output",
+    "estrategista": "estrategista_output",
+    "conteudista": "conteudista_output",
+    "critico": "critico_output",
+}
+
+AGENT_EXECUTORS = {
+    "roteirista": agent_roteirista,
+    "pesquisador": agent_pesquisador,
+    "estrategista": agent_estrategista,
+    "conteudista": agent_conteudista,
+    "critico": agent_critico,
+}
+
+
+def get_support_agents(route: str) -> tuple[str, ...]:
+    return SUPPORT_AGENTS_BY_ROUTE.get(route, SUPPORT_AGENTS_BY_ROUTE[DEFAULT_ROUTE])
+
+
+def run_agent_step(agent_name: str, state: TeamState) -> str:
+    agent_executor = AGENT_EXECUTORS[agent_name]
+    result = agent_executor(state)
+    return result[AGENT_OUTPUT_FIELDS[agent_name]]
+
+
+def support_panel(state: TeamState) -> TeamState:
+    route = state.get("route", DEFAULT_ROUTE)
+    support_agents = get_support_agents(route)
+
+    if not support_agents:
+        return {**state, "support_summary": ""}
+
+    support_updates = {}
+    support_messages = []
+
+    with ThreadPoolExecutor(max_workers=len(support_agents)) as executor:
+        futures = {
+            agent_name: executor.submit(run_agent_step, agent_name, state)
+            for agent_name in support_agents
+        }
+
+        for agent_name in support_agents:
+            output = futures[agent_name].result().strip()
+            support_updates[AGENT_OUTPUT_FIELDS[agent_name]] = output
+            support_messages.append(AIMessage(content=f"[{agent_name.upper()}]\n{output}"))
+
+    support_summary = "\n\n".join(
+        f"[{agent_name.upper()}]\n{support_updates[AGENT_OUTPUT_FIELDS[agent_name]]}"
+        for agent_name in support_agents
+    )
+
+    return {
+        **state,
+        **support_updates,
+        "support_summary": support_summary,
+        "messages": support_messages,
+    }
+
+
 def consolidate(state: TeamState) -> TeamState:
     route = state.get("route", DEFAULT_ROUTE)
     output_map = {
@@ -390,10 +460,69 @@ def consolidate(state: TeamState) -> TeamState:
     }
     selected_output = output_map.get(route)
     if selected_output:
-        return {**state, "final_output": selected_output}
+        support_summary = state.get("support_summary", "").strip()
+        if not support_summary:
+            return {**state, "final_output": selected_output}
+
+        prompt = f"""
+{BASE_CONTEXT}
+
+Você é o sintetizador final de um time multiagente.
+
+TAREFA ORIGINAL:
+{state["task"]}
+
+RESPOSTA PRINCIPAL ({route}):
+{selected_output}
+
+APOIO COMPLEMENTAR:
+{support_summary}
+
+REGRAS:
+- Preserve a direção principal da resposta.
+- Incorpore apenas os complementos que fortalecem a decisão.
+- Elimine redundâncias e divergências fracas.
+- Termine com próximos passos práticos.
+- Não mencione o processo interno de agentes.
+
+RESPOSTA FINAL:
+"""
+        synthesis = invoke_with_retry(prompt, "sintese")
+        final_output = synthesis.strip() or selected_output
+        return {**state, "final_output": final_output}
 
     logger.warning("consolidate_route_fallback route=%s fallback=%s", route, DEFAULT_ROUTE)
-    return {**state, "final_output": output_map[DEFAULT_ROUTE]}
+    fallback_output = output_map[DEFAULT_ROUTE]
+    support_summary = state.get("support_summary", "").strip()
+    if not support_summary:
+        return {**state, "final_output": fallback_output}
+
+    prompt = f"""
+{BASE_CONTEXT}
+
+Você é o sintetizador final de um time multiagente.
+
+TAREFA ORIGINAL:
+{state["task"]}
+
+RESPOSTA PRINCIPAL ({DEFAULT_ROUTE}):
+{fallback_output}
+
+APOIO COMPLEMENTAR:
+{support_summary}
+
+REGRAS:
+- Preserve a direção principal da resposta.
+- Incorpore apenas os complementos que fortalecem a decisão.
+- Elimine redundâncias e divergências fracas.
+- Termine com próximos passos práticos.
+- Não mencione o processo interno de agentes.
+
+RESPOSTA FINAL:
+"""
+    synthesis = invoke_with_retry(prompt, "sintese")
+    final_output = synthesis.strip() or fallback_output
+    return {**state, "final_output": final_output}
 
 
 def route_task(state: TeamState) -> str:
@@ -409,6 +538,7 @@ def build_graph():
     graph.add_node("estrategista", agent_estrategista)
     graph.add_node("conteudista", agent_conteudista)
     graph.add_node("critico", agent_critico)
+    graph.add_node("support_panel", support_panel)
     graph.add_node("consolidate", consolidate)
 
     graph.set_entry_point("manager")
@@ -426,8 +556,9 @@ def build_graph():
     )
 
     for node in ["roteirista", "pesquisador", "estrategista", "conteudista", "critico"]:
-        graph.add_edge(node, "consolidate")
+        graph.add_edge(node, "support_panel")
 
+    graph.add_edge("support_panel", "consolidate")
     graph.add_edge("consolidate", END)
 
     return graph.compile()

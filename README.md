@@ -53,5 +53,6 @@ python agentes_estrategia.py --task "write a 1-minute pitch"
 	- `LOG_LEVEL` (default: `INFO`)
 - The app now includes retry with exponential backoff and timeout protection for LLM calls.
 - Task input is validated before execution.
+- The app now runs complementary support agents in parallel and synthesizes a final answer.
 - `vertice_estrategia.py` is kept as a compatibility entrypoint.
-- On Python 3.14+, some LangChain ecosystem packages may emit warnings.
+- On Python 3.14/3.12+, some LangChain ecosystem packages may emit warnings.
