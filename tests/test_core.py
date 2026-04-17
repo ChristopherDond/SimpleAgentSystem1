@@ -32,6 +32,10 @@ def test_route_task_defaults_to_estrategista():
     assert app.route_task({"route": ""}) == "estrategista"
 
 
+def test_route_task_defaults_when_missing_route_key():
+    assert app.route_task({}) == "estrategista"
+
+
 def test_get_support_agents_returns_route_specific_pair():
     assert app.get_support_agents("estrategista") == ("pesquisador", "conteudista")
 
@@ -133,3 +137,17 @@ def test_consolidate_synthesizes_when_support_exists(monkeypatch):
 
     result = app.consolidate(state)
     assert result["final_output"] == "resposta final sintetizada"
+
+
+def test_load_config_uses_defaults_for_invalid_numeric_env(monkeypatch):
+    monkeypatch.setenv("LLM_TEMPERATURE", "abc")
+    monkeypatch.setenv("MAX_TASK_LENGTH", "-x")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "n/a")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "three")
+
+    cfg = app.load_config()
+
+    assert cfg.temperature == 0.3
+    assert cfg.max_task_length == 5000
+    assert cfg.timeout_seconds == 90
+    assert cfg.max_retries == 3

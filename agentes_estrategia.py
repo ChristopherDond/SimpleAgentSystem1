@@ -50,13 +50,35 @@ class AppConfig:
     max_retries: int
 
 
+def _parse_env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("invalid_env_value name=%s value=%s fallback=%s", name, raw, default)
+        return default
+
+
+def _parse_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("invalid_env_value name=%s value=%s fallback=%s", name, raw, default)
+        return default
+
+
 def load_config() -> AppConfig:
     return AppConfig(
         model=os.getenv("LLM_MODEL", "llama3.1"),
-        temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
-        max_task_length=int(os.getenv("MAX_TASK_LENGTH", "5000")),
-        timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
-        max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
+        temperature=_parse_env_float("LLM_TEMPERATURE", 0.3),
+        max_task_length=_parse_env_int("MAX_TASK_LENGTH", 5000),
+        timeout_seconds=_parse_env_int("LLM_TIMEOUT_SECONDS", 90),
+        max_retries=_parse_env_int("LLM_MAX_RETRIES", 3),
     )
 
 
@@ -526,7 +548,7 @@ RESPOSTA FINAL:
 
 
 def route_task(state: TeamState) -> str:
-    return state.get("route", DEFAULT_ROUTE)
+    return state.get("route") or DEFAULT_ROUTE
 
 
 def build_graph():
