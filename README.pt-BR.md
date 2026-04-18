@@ -4,6 +4,11 @@
 
 Sistema multiagente em Python para apoiar tarefas de estrategia, pesquisa, conteudo e revisao critica.
 
+## Entrypoints
+
+- `agentes_estrategia.py`: entrypoint principal da CLI
+- `vertice_estrategia.py`: wrapper legado de compatibilidade
+
 ## Agentes
 
 - Manager: roteia cada tarefa para o especialista mais adequado
@@ -39,20 +44,34 @@ Modo tarefa unica:
 
 ```bash
 python agentes_estrategia.py --task "escreva um pitch de 1 minuto"
+# ou
+python agentes_estrategia.py -t "escreva um pitch de 1 minuto"
 ```
+
+## Configuracao
+
+O app le as seguintes variaveis de ambiente:
+
+- `LLM_MODEL` (padrao: `llama3.1`)
+- `LLM_TEMPERATURE` (padrao: `0.3`)
+- `MAX_TASK_LENGTH` (padrao: `5000`)
+- `LLM_TIMEOUT_SECONDS` (padrao: `90`)
+- `LLM_MAX_RETRIES` (padrao: `3`)
+- `LOG_LEVEL` (padrao: `INFO`)
 
 ## Observacoes
 
 - O projeto foi limpo para uso generico/publico, sem contexto de negocio fixo.
-- Para trocar modelo e comportamento de execucao, use variaveis de ambiente:
-	- `LLM_MODEL` (padrao: `llama3.1`)
-	- `LLM_TEMPERATURE` (padrao: `0.3`)
-	- `LLM_TIMEOUT_SECONDS` (padrao: `90`)
-	- `LLM_MAX_RETRIES` (padrao: `3`)
-	- `MAX_TASK_LENGTH` (padrao: `5000`)
-	- `LOG_LEVEL` (padrao: `INFO`)
 - O app agora inclui retry com backoff exponencial e protecao de timeout nas chamadas ao LLM.
 - A tarefa de entrada agora passa por validacao antes da execucao.
 - O app agora executa agentes de apoio em paralelo e sintetiza uma resposta final integrada.
 - `vertice_estrategia.py` foi mantido como entrypoint de compatibilidade.
 - Em Python 3.14+, algumas bibliotecas do ecossistema LangChain podem emitir warnings.
+
+## Testes
+
+Execute a suite local com:
+
+```bash
+python -m pytest tests -q
+```
